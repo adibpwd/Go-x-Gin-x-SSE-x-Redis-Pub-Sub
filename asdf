@@ -1,0 +1,191 @@
+//main.go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"time"
+
+	"github.com/go-redis/redis/v8"
+	_ "github.com/lib/pq"
+
+	"github.com/gin-gonic/gin"
+	"github.com/patrickmn/go-cache"
+)
+
+// type Client struct {
+// 	name   string
+// 	events chan *DashBoard
+// }
+type DashBoard struct {
+	User uint
+}
+
+var myCache CacheItf
+
+type CacheItf interface {
+	Set(key string, data interface{}, expiration time.Duration) error
+	Get(key string) ([]byte, error)
+}
+
+type AppCache struct {
+	client *cache.Cache
+}
+
+func (r *AppCache) Set(key string, data interface{}, expiration time.Duration) error {
+	b, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	r.client.Set(key, b, expiration)
+	return nil
+}
+
+type ToDo struct {
+	UserID int    `json:"userId"`
+	ID     int    `json:"id"`
+	Title  string `json:"title"`
+	Body   string `json:"body"`
+}
+
+func InitCache() {
+	myCache = &AppCache{
+		client: cache.New(5*time.Minute, 10*time.Minute),
+	}
+}
+
+func (r *AppCache) Get(key string) ([]byte, error) {
+	res, exist := r.client.Get(key)
+	if !exist {
+		return nil, nil
+	}
+
+	resByte, ok := res.([]byte)
+	if !ok {
+		return nil, errors.New("Format is not arr of bytes")
+	}
+
+	return resByte, nil
+}
+
+var ctx = context.Background()
+
+var rdb = redis.NewClient(&redis.Options{
+	Addr: "172.30.0.5:6379",
+})
+
+func main() {
+	_, err := rdb.Ping(ctx).Result()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	// subscriptions := subscribe.ChannelWithSubscriptions(ctx, 1)
+	// go func() {
+	// 	var sentCount = 0
+	// 	for {
+	// 		rdb.Publish(ctx, "example", time.Now().UnixNano())
+	// 		sentCount++
+	// 		if sentCount > 300 {
+	// 			break
+	// 		}
+	// 	}
+	// }()
+	// for {
+	// 	select {
+	// 	case sub := <-subscriptions:
+	// 		fmt.Println(sub)
+	// 	}
+	// }
+
+	app := gin.Default()
+	// app.GET("/sse", app.Handler(dashboardHandler()))
+	// app.GET("/sse", adaptor.HTTPHandler(handler(dashboardHandler)))
+	// app.Listen(":3000")
+	InitCache() // comment if want to use redis cache
+
+	app.GET("/webhook/test/:msg", func(c *gin.Context) {
+		msg := c.Param("msg")
+		rdb.Publish(ctx, "example", msg)
+		// myCache.Get("example")
+		fmt.Println("ceritanya nanti ada logic buat nerima data dari tripay")
+	})
+	app.GET("/stream/:name", func(c *gin.Context) {
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("Access-Control-Allow-Origin", "*")
+
+		// name := c.Param("name")
+		// chanStream := make(chan string, 10000)
+		// go func() {
+		// defer close(chanStream)
+		// for i := 0; i < 5; i++ {
+		// 	chanStream <- name + " - " + strconv.Itoa(i)
+		// 	myCache.Set("test", name+"piye "+strconv.Itoa(i), 1*time.Minute)
+		// 	time.Sleep(time.Second * 1)
+		// #ask
+
+		// Saya ada rencana pakai ssr, case nya pembayaran order, nanti create ordernya di dalam ssr, expired pembayaran sekitar 15 menit, menggunakan qris, cara memberitahu user kalau pembayaran sudah berhasil / gagal pakai apa ya?
+		// }
+		// }()
+		c.Stream(func(w io.Writer) bool {
+			subscribe := rdb.Subscribe(ctx, "example")
+			a, err := subscribe.Receive(ctx)
+			if err != nil {
+				fmt.Println(err)
+				return false
+			}
+			fmt.Println(a)
+			// if msg, ok := <-chanStream; ok {
+			// d, _ := myCache.Get("test")
+			c.SSEvent("message", a)
+			return true
+			// }
+		})
+	})
+	app.Run(":3000")
+}
+
+// func handler(f http.HandlerFunc) http.Handler {
+// 	return http.HandlerFunc(f)
+// }
+// func dashboardHandler(w http.ResponseWriter, r *http.Request) {
+// 	client := &Client{name: r.RemoteAddr, events: make(chan *DashBoard, 10)}
+// 	go updateDashboard(client)
+
+// 	w.Header().Set("Access-Control-Allow-Origin", "*")
+// 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+// 	w.Header().Set("Content-Type", "text/event-stream")
+// 	w.Header().Set("Cache-Control", "no-cache")
+// 	w.Header().Set("Connection", "keep-alive")
+
+// 	timeout := time.After(1 * time.Second)
+// 	select {
+// 	case ev := <-client.events:
+// 		var buf bytes.Buffer
+// 		enc := json.NewEncoder(&buf)
+// 		enc.Encode(ev)
+// 		fmt.Fprintf(w, "data: %v\n\n", buf.String())
+// 		fmt.Printf("data: %v\n", buf.String())
+// 	case <-timeout:
+// 		fmt.Fprintf(w, ": nothing to sent\n\n")
+// 	}
+
+// 	if f, ok := w.(http.Flusher); ok {
+// 		f.Flush()
+// 	}
+// }
+
+// func updateDashboard(client *Client) {
+// 	for {
+// 		db := &DashBoard{
+// 			User: uint(rand.Uint32()),
+// 		}
+// 		client.events <- db
+// 	}
+// }
